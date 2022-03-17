@@ -1,6 +1,7 @@
 (ns krukow.mentor-match
   (:require [clojure.math.combinatorics :as combo]
             [krukow.mentor-match.sheets-parser :as parser]
+            [krukow.mentor-match.map-utils :as u]
             [clojure.set :as set]
             [clojure.pprint :as p])
   (:import (org.chocosolver.solver Model)
@@ -8,29 +9,12 @@
                                              SetVar)
            (org.chocosolver.solver.constraints.extension Tuples)))
 
-;; Utils
-
-(defn indexed-map
-  [s]
-  (->> s
-       (map-indexed vector)
-       (into (sorted-map))))
-
-(defn map-values
-  "Like map takes and returns a map.
-  Maps across the values of a map-data structure, preserving keys.
-  Example: (map-values inc {:a 1 :b 2 :c 3})
-  => {:a 2, :b 3, :c 4}"
-  [f m]
-  (reduce-kv (fn [m k v] (assoc m k (f v))) {} m))
-
-;;; Logic
 
 (defn select-mentees
   [all n]
   (->> all
        (filter #(seq (:mentor-preferences %))) ;; has preferences
-       (filter #(nil? (:mentor-handle %))) ;; is unassigned
+       (filter #(nil? (:mentor-handle %)))     ;; is unassigned
        (take n))) ;; at most n
 
 (defn select-preferences
@@ -59,11 +43,11 @@
 
 (defn create-scores [ps any-mentor]
   (let [points 100
-        default-score (int (/ 100 (count any-mentor)))]
+        default-score (int (/ points (count any-mentor)))]
     (if (seq ps)
       (let [weights (range 1 (inc (count ps))) ;; 1 + 2 + .. + (count ps)
             sum (reduce + weights)
-            factor (/ 100 sum)]
+            factor (/ points sum)]
         (map
          (fn [w x] [x (int (* w factor))])
          weights
@@ -189,7 +173,7 @@
         all-mentees (->> all-mentee-preferences
                          (map :mentee)
                          (into #{})
-                         indexed-map)
+                         u/into-indexed-sorted-map)
         mentors-set (->> all-mentee-preferences
                          (mapcat :mentor-preferences)
                          (into #{}) ;;unique
@@ -199,8 +183,8 @@
                                      (map :mentor-handle)
                                      (filter (complement nil?))))
 
-        mentors (indexed-map (set/difference mentors-set
-                                             taken-mentors-set))
+        mentors (u/into-indexed-sorted-map
+                 (set/difference mentors-set taken-mentors-set))
         mcount (count mentors)
         ;; can't have more mentees than mentors :/
         mentee-preferences (-> (remove-taken-preferences taken-mentors-set
@@ -210,7 +194,7 @@
         mentees (->> mentee-preferences
                      (map :mentee)
                      (into #{}) ;; unique
-                     indexed-map)]
+                     u/into-indexed-sorted-map)]
     (println "From a total of" (count all-mentees) "mentees.")
     (println "With a total of" (count mentors-set) "mentors.")
     (println "Pre-matched mentors:" (count taken-mentors-set))

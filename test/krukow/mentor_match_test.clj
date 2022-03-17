@@ -1,6 +1,7 @@
 (ns krukow.mentor-match-test
   (:require [clojure.test :refer :all]
             [clojure.set :as set]
+            [krukow.mentor-match.map-utils :as u]
             [krukow.mentor-match :refer :all]))
 
 (deftest simple-integration
@@ -25,7 +26,7 @@
         all-mentees (->> all-mentee-preferences
                          (map :mentee)
                          (into #{})
-                         indexed-map)
+                         u/into-indexed-sorted-map )
         mentors-set (->> all-mentee-preferences
                          (mapcat :mentor-preferences)
                          (into #{}) ;;unique
@@ -35,7 +36,7 @@
                                      (map :mentor-handle)
                                      (filter (complement nil?))))
 
-        mentors (indexed-map (set/difference mentors-set
+        mentors (u/into-indexed-sorted-map (set/difference mentors-set
                                              taken-mentors-set))
         mcount (count mentors)
         ;; can't have more mentees than mentors :/
@@ -47,7 +48,7 @@
         mentees (->> mentee-preferences
                      (map :mentee)
                      (into #{}) ;; unique
-                     indexed-map)
+                     u/into-indexed-sorted-map)
 
         expected-solution {:score 165,
                            :solution
