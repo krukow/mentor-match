@@ -1,213 +1,36 @@
 (ns krukow.mentor-match
   (:require [clojure.math.combinatorics :as combo]
+            [clojure.pprint :as p]
             [krukow.mentor-match.sheets-parser :as parser]
             [krukow.mentor-match.map-utils :as u]
-            [clojure.set :as set]
-            [clojure.pprint :as p])
+            [krukow.mentor-match.int-constraints :as ic]
+            [krukow.mentor-match.domain :as dom])
   (:import (org.chocosolver.solver Model)
            (org.chocosolver.solver.variables IntVar
                                              SetVar)
            (org.chocosolver.solver.constraints.extension Tuples)))
 
-
-(defn select-mentees
-  [all n]
-  (->> all
-       (filter #(seq (:mentor-preferences %))) ;; has preferences
-       (filter #(nil? (:mentor-handle %)))     ;; is unassigned
-       (take n))) ;; at most n
-
-(defn select-preferences
-  [ms mentee-preferences]
-  (let [menteesT (zipmap (vals ms) (keys ms))]
-    (filter (fn [x] (get menteesT (:mentee x)))
-            mentee-preferences)))
-
-(defn remove-taken-preferences
-  [taken mentee-preferences]
-  (map
-   (fn [x]
-     (let [prefs (:mentor-preferences x)]
-       (assoc x :mentor-preferences (remove taken prefs))))
-   mentee-preferences))
-
-
-(defn configure-tuples!
-  [model scores pref-var]
-  (let [tuples (new Tuples true)
-        score-var (.intVar model (str "score-" (.getName pref-var)) 0 1000)]
-    (doseq [[x score] scores]
-      (.add tuples (int-array [x score])))
-    (.post (.table model pref-var score-var tuples))
-    score-var))
-
-(defn create-scores [ps any-mentor]
-  (let [points 100
-        default-score (int (/ points (count any-mentor)))]
-    (if (seq ps)
-      (let [weights (range 1 (inc (count ps))) ;; 1 + 2 + .. + (count ps)
-            sum (reduce + weights)
-            factor (/ points sum)]
-        (map
-         (fn [w x] [x (int (* w factor))])
-         weights
-         (reverse ps)))
-      (map (fn [x] [x default-score]) any-mentor))))
-
-(defn create-preferences-vars!
-  [^Model model mentees prefs var-map mentorsT]
-  (let [menteesT (zipmap (vals mentees) (keys mentees))]
-    (->> prefs
-         (map (fn [{:keys [mentee mentor-preferences]}]
-                (let [mentee-index (get menteesT mentee)
-                      var-name (str "prefs-" mentee-index)
-                      ps (map mentorsT mentor-preferences)
-                      any-mentor (int-array (sort (vals mentorsT)))
-                      aprefs (if (seq ps)
-                               (int-array ps)
-                               any-mentor)
-                      scores (create-scores ps any-mentor)
-                      pref-var (.setVar model var-name aprefs)
-                      score-var (configure-tuples! model scores (get var-map mentee-index))]
-                  [mentee-index [pref-var score-var]])))
-         (into {}))))
-
-(defn index->names
-  [solution mentees mentors]
-  (map
-   (juxt (comp mentees first)
-         (comp mentors second))
-   solution))
-
-(defn solution-seq
-  [solver var-map score-sum-var mentees mentors]
-  (lazy-seq
-   (when (.solve solver)
-     (cons {:score (.getValue score-sum-var)
-            :solution (doall
-                       (index->names
-                        (map (fn [[i m]] [i (.getValue m)]) var-map)
-                        mentees
-                        mentors))}
-           (solution-seq solver var-map score-sum-var mentees mentors)))))
-
-(defn solutions-for [n mentees mentors mentee-preferences]
-  (let [mentorsT (zipmap (vals mentors) (keys mentors)) ;; name -> id
-        mcount (count mentors)
-        last-mentor (dec mcount) ;; index of last mentor
-        mentee-combos (combo/combinations mentees n) ;; seq of (pick n mentees)
-        cnt (count mentee-combos)]
-    (println "Trying " cnt "combinations...")
-    (->> mentee-combos ;; for each choice of n mentees
-         (map-indexed
-          (fn [i ms]
-            (when (zero? (mod i 1000))
-              (printf "%d/%d" i cnt)
-              (println))
-            (let [model (Model. (str "mentor-match" n "-" i))
-                  mentees-map (into (sorted-map) ms)
-                  first-mentee (first (keys mentees-map))
-                  last-mentee  (last (keys mentees-map))
-                  match-vars (.intVarArray model
-                                           "matches"
-                                           (count mentees-map) ;; one for each mentee
-                                           0 ;; range: all the mentors
-                                           last-mentor)
-                  var-map (->> mentees-map ;; mentee-index -> match-var
-                               (map-indexed
-                                (fn [i [mi _]] [mi (aget match-vars i)]))
-                               (into {}))
-                  mentees-submap (select-keys mentees (keys mentees-map))
-                  prefs (select-preferences mentees-submap mentee-preferences)
-                  prefs-scores-vars (create-preferences-vars! model
-                                                              mentees-map
-                                                              prefs
-                                                              var-map
-                                                              mentorsT)
-                  prefs-vars (into {} (map #(vector (first %) (first (second %)))
-                                          prefs-scores-vars))
-                  score-vars (into {} (map #(vector (first %) (second (second %)))
-                                          prefs-scores-vars))
-                  scores (map second score-vars)
-                  sum-var (.intVar (.add (first scores)
-                                         (into-array IntVar (rest scores))))
-                  constrain-model!
-                  (fn []
-                    ;; each mentor must only have one mentee
-                    (.. model
-                        (allDifferent match-vars)
-                        (post))
-                    (doseq [[i m] var-map]
-                      (let [mprefs (get prefs-vars i)]
-                        (.. model
-                            (member m mprefs)
-                            post))))]
-
-              (constrain-model!)
-
-              (.setObjective model Model/MAXIMIZE sum-var)
-
-              (let [solver (.getSolver model)]
-                (solution-seq solver var-map sum-var mentees mentors))))))))
-
-(defn validate-solution
-  [s n]
-  (let [unique-mentors (into #{} (map second (:solution s)))]
-    (= (count unique-mentors) n)))
-
-(defn select-solution [sols]
-  (last (sort-by :score sols)))
-
-(defn best-solution
-  [solutions]
-  (let [best-candidates
-        (map #(select-solution %) solutions)]
-    (->> (doall best-candidates)
-         (sort-by :score)
-         last)))
-
+(declare solutions-for)
 
 (defn match
   [{:keys [config sheet-url] :as conf}]
   (let [all-mentee-preferences (parser/parse-sheet sheet-url config)
-        all-mentees (->> all-mentee-preferences
-                         (map :mentee)
-                         (into #{})
-                         u/into-indexed-sorted-map)
-        mentors-set (->> all-mentee-preferences
-                         (mapcat :mentor-preferences)
-                         (into #{}) ;;unique
-                         )
-        taken-mentors-set (into #{}
-                                (->> all-mentee-preferences
-                                     (map :mentor-handle)
-                                     (filter (complement nil?))))
 
-        mentors (u/into-indexed-sorted-map
-                 (set/difference mentors-set taken-mentors-set))
-        mcount (count mentors)
-        ;; can't have more mentees than mentors :/
-        mentee-preferences (-> (remove-taken-preferences taken-mentors-set
-                                                         all-mentee-preferences)
-                               (select-mentees  mcount))
+        {:keys [mentee-preferences available-mentors]}
+        (dom/preferences-to-solve-for all-mentee-preferences)
 
-        mentees (->> mentee-preferences
-                     (map :mentee)
-                     (into #{}) ;; unique
-                     u/into-indexed-sorted-map)]
-    (println "From a total of" (count all-mentees) "mentees.")
-    (println "With a total of" (count mentors-set) "mentors.")
-    (println "Pre-matched mentors:" (count taken-mentors-set))
-    (println "Available mentors:" (count mentors))
-    (println "Picking" (count mentees) "mentees with preferences...")
+        nmentors (count available-mentors)
+
+        {mentees :source->int
+         mentors :target->int
+         :as int-domain} (ic/map->int-domains mentee-preferences)]
+    (println "From a total of" (count all-mentee-preferences) "mentees.")
+    (println "With" nmentors "available mentors.")
     (println "\nRunning constraint solver...\n")
-    (loop [n (count mentees)]
+    (loop [n (count mentee-preferences)]
       (println "Trying to match:" n "mentees")
-      (let [solutions (filter seq (solutions-for n
-                                                 mentees
-                                                 mentors
-                                                 mentee-preferences))
-            bs (best-solution solutions)]
+      (let [solutions (filter seq (solutions-for n int-domain))
+            bs (ic/best-solution solutions)]
         (if (seq bs)
           (p/pprint bs)
           (if (> n 2)
@@ -216,9 +39,40 @@
               (recur (dec n)))
             (println "Unable to find any solution.")))))))
 
-
+(defn solutions-for [n {int->mentee :int->source
+                        int->mentor :int->target
+                        constraints :constraints}]
+  (let [mcount (count int->mentor) ;; mentor count
+        ;; seq of (pick n mentees)
+        mentee-combos (combo/combinations (keys int->mentee) n)
+        cnt (count mentee-combos)]
+    (println "Trying " cnt "combinations...")
+    (->> mentee-combos ;; for each choice of n mentees
+         (map-indexed
+          (fn [i ms]
+            (when (zero? (mod i 1000))
+              (printf "%d/%d" i cnt)
+              (println))
+            (let [ms-constraints (into (sorted-map)
+                                       (select-keys constraints ms))
+                  int-solution->domain #(update
+                                         %
+                                         :solution
+                                         (fn [solution]
+                                           (map (fn [i-mentee i-mentor]
+                                                  [(get int->mentee i-mentee)
+                                                   (get int->mentor i-mentor)])
+                                                (keys ms-constraints)
+                                                solution)))]
+              (->> (ic/solve ms-constraints dom/scoring-fn)
+                   (map int-solution->domain))))))))
 
 (comment
   (def solutions
     (filter seq (solutions-for 35)))
+  (defn validate-solution
+    [s n]
+    (let [unique-mentors (into #{} (map second (:solution s)))]
+      (= (count unique-mentors) n)))
+
   )

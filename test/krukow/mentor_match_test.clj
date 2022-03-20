@@ -2,6 +2,8 @@
   (:require [clojure.test :refer :all]
             [clojure.set :as set]
             [krukow.mentor-match.map-utils :as u]
+            [krukow.mentor-match.int-constraints :as ic]
+            [krukow.mentor-match.domain :as dom]
             [krukow.mentor-match :refer :all]))
 
 (deftest simple-integration
@@ -23,41 +25,21 @@
                                       :status "",
                                       :mentor-preferences '("@ethel" "@fred"),
                                       :mentor-handle nil})
-        all-mentees (->> all-mentee-preferences
-                         (map :mentee)
-                         (into #{})
-                         u/into-indexed-sorted-map )
-        mentors-set (->> all-mentee-preferences
-                         (mapcat :mentor-preferences)
-                         (into #{}) ;;unique
-                         )
-        taken-mentors-set (into #{}
-                                (->> all-mentee-preferences
-                                     (map :mentor-handle)
-                                     (filter (complement nil?))))
+        {:keys [mentee-preferences]} (dom/preferences-to-solve-for
+                                      all-mentee-preferences)
 
-        mentors (u/into-indexed-sorted-map (set/difference mentors-set
-                                             taken-mentors-set))
-        mcount (count mentors)
-        ;; can't have more mentees than mentors :/
-        mentee-preferences (-> (remove-taken-preferences
-                                taken-mentors-set
-                                all-mentee-preferences)
-                               (select-mentees mcount))
-
-        mentees (->> mentee-preferences
-                     (map :mentee)
-                     (into #{}) ;; unique
-                     u/into-indexed-sorted-map)
+        int-domain (ic/map->int-domains mentee-preferences)
 
         expected-solution {:score 165,
                            :solution
-                           (list ["ricky@email.com" "@ethel"]
-                                 ["mary@email.com" "@lucy"]
-                                 ["bob@email.com" "@fred"])}
-        solutions (solutions-for 3 mentees mentors mentee-preferences)
-        ]
+                           (into {}
+                                 (list ["ricky@email.com" "@ethel"]
+                                       ["mary@email.com" "@lucy"]
+                                       ["bob@email.com" "@fred"]))}
+        solutions (solutions-for 3 int-domain)]
     (testing "Simple match"
       (is (= 1 (count solutions)))
       (is (= 1 (count (first solutions))))
-      (is (= expected-solution (ffirst solutions) )))))
+      (let [sol (ffirst solutions)]
+        (is (= (:score expected-solution) (:score sol)))
+        (is (= (:solution expected-solution) (into {} (:solution sol))))))))
