@@ -1,5 +1,6 @@
 (ns krukow.mentor-match.int-constraints
-  (:require [krukow.mentor-match.map-utils :as u])
+  (:require [clojure.math.combinatorics :as combo]
+            [krukow.mentor-match.map-utils :as u])
   (:import (org.chocosolver.solver Model)
            (org.chocosolver.solver.variables IntVar
                                              SetVar)
@@ -41,13 +42,15 @@
     tuples))
 
 (defn create-model-vars!
-  "Given a model, a map of constraints (int -> list of int),
+  "Given a model, a sorted map of constraints (int -> list of int),
   and a scoring function (score each list of constraints).
-  Create the following vars in the model:
-  {:solution-vars list of vars of solutions to constraints
-   :constraints-vars list of set vars that can only take on values from constraints
-   :score-vars score-vars list of scoring variables to score each solution
-   :optimized-var sum-var a var that is the sum of the scoring vars}"
+  Create the following vars for each key in the int-constraints.
+  {:solution solution int var
+   :constraint constraint set vars
+   :score score-var scoring int var
+   :score-tuples a tuples object that maps solutions to scores}
+  returns map of {:objective var(sum of all scores),
+                  :vars sorted map of int to vars above}"
   [model int-constraints scoring-fn]
   (let [source-domain (keys int-constraints)
         target-domain (into (sorted-set) (mapcat second int-constraints))
@@ -60,73 +63,130 @@
                                     (count source-domain)
                                     first-target
                                     last-target)
-        constraints-vars (doall
-                          (map
-                           (fn [[source targets]]
-                             (if-let [targets (seq targets)]
-                               (.setVar model
-                                        (str "constraint-" source)
-                                        (int-array targets))
-                               (.setVar model
-                                        (str "constraint-" source)
-                                        (int-array target-domain))))
-                           int-constraints))
-        score-vars (doall
-                    (map
-                     (fn [[source targets] source-var]
-                       (let [target-scores (scoring-fn targets target-domain)
-                             tuples (map->tuples target-scores)
-                             score-var (.intVar model (str "score-" source) 0 1000)]
-                         (-> (.table model source-var score-var tuples)
-                             .post)
-                         score-var))
-                     int-constraints
-                     solution-vars))
+        constraints-vars (map
+                          (fn [[source targets]]
+                            (if-let [targets (seq targets)]
+                              (.setVar model
+                                       (str "constraint-" source)
+                                       (int-array targets))
+                              (.setVar model
+                                       (str "constraint-" source)
+                                       (int-array target-domain))))
+                          int-constraints)
+
+        score-vars (.intVarArray model
+                                 "solution-scores"
+                                 (count source-domain)
+                                 0
+                                 1000)
+
+        score-tuples (map
+                      (fn [[_ targets]]
+                        (map->tuples (scoring-fn targets target-domain)))
+                      int-constraints)
 
         sum-var (-> (first score-vars)
                     (.add (into-array IntVar (rest score-vars)))
                     .intVar)]
-    {:solution-vars solution-vars
-     :constraints-vars constraints-vars ;; avoid laziness here
-     :score-vars score-vars
-     :objective-var sum-var}))
+
+    {:vars (into
+            (sorted-map)
+            (map
+             (fn [source sol-var cons-var score-var score-tuples]
+               [source {:solution sol-var
+                        :constraint cons-var
+                        :score score-var
+                        :score-tuples score-tuples}])
+             source-domain
+             solution-vars
+             constraints-vars
+             score-vars
+             score-tuples))
+     :objective sum-var}))
 
 (defn constrain-model-vars!
   "Given a model and the output of create-model-vars! function,
   sets the following constraints on the model:
   - all solutions must take on distinct values
+  - map solution vars to corresponding scoring-vars
   - for each solution var, it must take on a value in the
   corresponding constraint set var"
-  [model {:keys [solution-vars constraints-vars]}]
-  (.. model
-      (allDifferent solution-vars)
-      (post))
-  (loop [[sv & svs] solution-vars
-         [cv & cvs] constraints-vars]
+  [model model-vars]
+
+  (let [solution-vars (doall (map :solution (vals (:vars model-vars))))]
     (.. model
-        (member sv cv)
-        post)
-    (when (seq svs)
-      (recur svs cvs))))
+        (allDifferent (into-array solution-vars))
+        (post)))
+
+  (doseq [[_ {:keys [solution score score-tuples]}] (:vars model-vars)]
+    (-> (.table model solution score score-tuples)
+        .post))
+
+  (doseq [[_ {:keys [solution constraint]}] (:vars model-vars)]
+    (-> model
+        (.member solution constraint)
+        .post)))
 
 (defn solution-seq
-  [solver vars]
+  "Lazy seq of solutions obtained by repeatedly
+   calling .solve on solver, and evaluating the solutions and score."
+  [solver {:keys [objective vars] :as model-vars}]
   (lazy-seq
    (when (.solve solver)
-     (cons {:score (.getValue (:objective-var vars))
+     (cons {:score (.getValue objective)
             :solution (doall
-                       (map #(.getValue %) (:solution-vars vars)))}
-           (solution-seq solver vars)))))
+                       (map #(.getValue (:solution %)) (vals vars)))}
+           (solution-seq solver model-vars)))))
 
 (defn solve
+  "Given a sorted map of (int) constraints and a scoring function,
+  returns an seq of solutions to the constraints."
   [constraints scoring-fn]
   (let [model (Model.)
         vars (create-model-vars! model constraints scoring-fn)]
     (constrain-model-vars! model vars)
-    (.setObjective model Model/MAXIMIZE (:objective-var vars))
+    (.setObjective model Model/MAXIMIZE (:objective vars))
     (solution-seq (.getSolver model) vars)))
 
+
+(defn solutions-for
+  "Given an int n, a finite domain mapping of constraints
+  (obtained by map->int-domains), and a scoring function,
+  for each way of choosing n sources, provides a lazy seq of
+  solutions to satisfying those n sources constraints."
+  [n
+   {int->mentee :int->source
+    int->mentor :int->target
+    constraints :constraints}
+   scoring-fn]
+  (let [mcount (count int->mentor) ;; mentor count
+        ;; seq of (pick n mentees)
+        mentee-combos (combo/combinations (keys int->mentee) n)
+        cnt (count mentee-combos)]
+    (println "Trying " cnt "combinations...")
+    (->> mentee-combos ;; for each choice of n mentees
+         (map-indexed
+          (fn [i ms]
+            (when (zero? (mod i 1000))
+              (printf "%d/%d" i cnt)
+              (println))
+            (let [ms-constraints (into (sorted-map) (select-keys constraints ms))
+                  int-solutions (solve ms-constraints scoring-fn)
+                  int-solution->domain #(update
+                                         %
+                                         :solution
+                                         (fn [solution]
+                                           (map (fn [i-mentee i-mentor]
+                                                  [(get int->mentee i-mentee)
+                                                   (get int->mentor i-mentor)])
+                                                (keys ms-constraints)
+                                                solution)))]
+              (->> int-solutions
+                   (map int-solution->domain))))))))
+
 (defn best-solution
+  "Given a seq of (seq of solutions), pick the best of all of them
+  (highest :score solution)."
   [solutions]
   (let [select-solution (fn [sols]
                           (last (sort-by :score sols)))
@@ -134,3 +194,15 @@
     (->> best-candidates
          (sort-by :score)
          last)))
+
+
+
+(comment
+  (def solutions
+    (filter seq (solutions-for 35)))
+  (defn validate-solution
+    [s n]
+    (let [unique-mentors (into #{} (map second (:solution s)))]
+      (= (count unique-mentors) n)))
+
+  )

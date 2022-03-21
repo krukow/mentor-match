@@ -36,7 +36,7 @@
                                  (list ["ricky@email.com" "@ethel"]
                                        ["mary@email.com" "@lucy"]
                                        ["bob@email.com" "@fred"]))}
-        solutions (solutions-for 3 int-domain)]
+        solutions (ic/solutions-for 3 int-domain dom/scoring-fn)]
     (testing "Simple match"
       (is (= 1 (count solutions)))
       (is (= 1 (count (first solutions))))
