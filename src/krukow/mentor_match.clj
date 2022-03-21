@@ -24,7 +24,7 @@
       (println "Trying to match:" n "mentees")
       (let [solutions (filter seq (ic/solutions-for n int-domain dom/scoring-fn))
             bs (ic/best-solution solutions)]
-        (if (seq bs)
+        (if bs
           (p/pprint bs)
           (if (> n 2)
             (do
