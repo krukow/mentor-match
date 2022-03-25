@@ -145,7 +145,7 @@
   (let [model (Model.)
         vars (create-model-vars! model constraints scoring-fn)]
     (constrain-model-vars! model vars)
-    (.setObjective model Model/MAXIMIZE (:objective vars))
+    ;;(.setObjective model Model/MAXIMIZE (:objective vars))
     (solution-seq (.getSolver model) vars)))
 
 
@@ -183,6 +183,15 @@
                                                 solution)))]
               (->> int-solutions
                    (map int-solution->domain))))))))
+
+
+(defn sort-by-best-solution
+  [solutions]
+  (->> solutions
+       flatten
+       (into #{})
+       (sort-by :score (comparator >))
+       ))
 
 (defn best-solution
   "Given a seq of (seq of solutions), pick the best of all of them

@@ -16,3 +16,13 @@
   => {:a 2, :b 3, :c 4}"
   [f m]
   (reduce-kv (fn [m k v] (assoc m k (f v))) {} m))
+
+(defn deep-merge
+  "Merges maps of similar shapes (e.g. for default+override in config files).
+  The default must have all the nested keys present."
+  [default overrides]
+  (letfn [(deep-merge-rec [a b]
+            (if (map? a)
+              (merge-with deep-merge-rec a b)
+              b))]
+    (reduce deep-merge-rec nil (list default overrides))))

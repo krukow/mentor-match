@@ -1,6 +1,8 @@
 (ns krukow.mentor-match.config
   (:require [clojure.string :as string]
-            [clojure.java.io :as io])
+            [clojure.java.io :as io]
+            [krukow.mentor-match.map-utils :as u]
+            [clj-http.conn-mgr :as conn-mgr])
   (:import (com.google.api.client.auth.oauth2 Credential)
            (com.google.api.client.extensions.java6.auth.oauth2
               AuthorizationCodeInstalledApp)
@@ -28,7 +30,27 @@
 
 (def credentials-json-path-env "GOOGLE_CREDENTIALS_JSON")
 (def ^:dynamic *credentials-json-path-override* nil)
+(def ^:dynamic *debug-http* false)
+(def ^:dynamic *access-token* nil)
+(def github-token "GITHUB_TOKEN")
+(def ^:const github-graphql-url "https://api.github.com/graphql")
 
+(defn debug-from-env?
+  []
+  (let [env (System/getenv "DEBUG")]
+    (if (or *debug-http* (= "1" env))
+      true
+      false)))
+
+(defn access-token
+  []
+  (let [token (or *access-token*
+                  (environment-config github-token))]
+    (when (nil? token)
+      (RuntimeException. (str "Please ensure environment variable "
+                              github-token
+                              " is set.")))
+    token))
 
 (defn google-credentials
   [transport token-dir-path]
@@ -53,3 +75,19 @@
       (.
        (new AuthorizationCodeInstalledApp flow, receiver)
        (authorize "user")))))
+
+
+(def http-options-base
+  {:socket-timeout 30000  ;; in milliseconds
+   :conn-timeout 10000
+   :connection-manager (conn-mgr/make-reusable-conn-manager {})
+   :accept :json
+   :as :json})
+
+(defn http-options
+  ([] (http-options {}))
+  ([overrides]
+   (-> http-options-base
+       (u/deep-merge {:headers {"Authorization" (str "token " (access-token))}
+                      :debug (debug-from-env?)})
+       (u/deep-merge overrides))))

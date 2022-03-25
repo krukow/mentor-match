@@ -1,5 +1,6 @@
 (ns krukow.mentor-match.domain
-  (:require [clojure.set :as set]))
+  (:require [clojure.set :as set]
+            [clojure.string :as st]))
 
 (defn scoring-fn
   "Scoring seq of preferences: p1, ..., pn so that
@@ -27,7 +28,8 @@
   (into #{}
         (->> all-mentee-preferences
              (map :mentor-handle)
-             (filter (complement nil?)))))
+             (filter (complement nil?))
+             (map st/lower-case))))
 
 (defn select-mentees
   [all n]
@@ -42,20 +44,46 @@
     (filter (fn [x] (get menteesT (:mentee x)))
             mentee-preferences)))
 
+(defn filter-mentee-preferences
+  [available-set mentee-preferences]
+  (->> mentee-preferences
+       (map
+        (fn [pref]
+          (update pref :mentor-preferences
+                  (comp
+                   #(filter available-set %)
+                   #(map st/lower-case %)))))))
+
+
 (defn remove-taken-preferences
   [taken mentee-preferences]
-  (map
-   (fn [pref]
-     (update pref :mentor-preferences #(remove taken %)))
-   mentee-preferences))
+  (->> mentee-preferences
+       (map
+        (fn [pref]
+          (update pref :mentor-preferences
+                  (comp
+                   #(remove taken %)
+                   #(map st/lower-case %)))))))
 
-(defn preferences-to-solve-for
+(defn preferences-to-solve-for-sheet-only
   [all-mentee-preferences]
   (let [all-mentors-set (into #{}
                               (mapcat :mentor-preferences all-mentee-preferences))
         taken-mentors-set (taken-mentors-set all-mentee-preferences)
         available-mentors (set/difference all-mentors-set taken-mentors-set)
         prefs (remove-taken-preferences taken-mentors-set all-mentee-preferences)
+        selected-mentee-prefs (select-mentees prefs (count available-mentors))]
+    {:mentee-preferences (zipmap (map :mentee selected-mentee-prefs)
+                                 (map :mentor-preferences selected-mentee-prefs))
+     :available-mentors available-mentors}))
+
+(defn preferences-to-solve-for
+  [all-mentee-preferences available-mentors]
+  (let [all-mentors-set (into #{}
+                              (map (comp st/lower-case :handle) available-mentors))
+        taken-mentors-set (taken-mentors-set all-mentee-preferences)
+        available-mentors (set/difference all-mentors-set taken-mentors-set)
+        prefs (filter-mentee-preferences available-mentors all-mentee-preferences)
         selected-mentee-prefs (select-mentees prefs (count available-mentors))]
     {:mentee-preferences (zipmap (map :mentee selected-mentee-prefs)
                                  (map :mentor-preferences selected-mentee-prefs))
