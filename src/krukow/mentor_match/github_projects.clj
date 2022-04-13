@@ -3,7 +3,8 @@
             [clojure.string :as string]
             [cheshire.core :as json]
             [krukow.mentor-match.config :as cfg]
-            [krukow.mentor-match.map-utils :as u]))
+            [krukow.mentor-match.map-utils :as u])
+  (:import java.util.TimeZone))
 
 (def ^:private mentor-organization "github")
 (def ^:private mentor-project-number 5127)
@@ -115,6 +116,45 @@
           [field-name field-value])))
     field-names)))
 
+(def ^:private available-timezone-ids (TimeZone/getAvailableIDs))
+
+(def ^:private timezone-map
+  {"eastern time - us" "US/Eastern"
+   "eastern time -us" "US/Eastern"
+   "pacific time - us" "US/Pacific"
+   "pacific time -us" "US/Pacific"
+   "pacific" "US/Pacific"
+   "eastern standard - est" "US/Eastern"
+   "eastern standard -est" "US/Eastern"
+   "central time - us" "US/Central"
+   "central time -us" "US/Central"
+
+
+   })
+
+(defn- match-timezone-id
+  [id timezoneid]
+  (= (string/lower-case id)
+     (string/lower-case timezoneid)))
+
+(defn- match-timezone
+  [id]
+  (if (nil? id)
+    {:timezone-string nil
+     :timezone nil}
+    (let [direct-match
+          (first
+           (filter #(match-timezone-id id %) available-timezone-ids))]
+      (if direct-match
+        {:timezone-string id
+         :timezone (TimeZone/getTimeZone direct-match)}
+        (if-let [mapped-match (get timezone-map (string/lower-case id))]
+          {:timezone-string id
+           :timezone (TimeZone/getTimeZone mapped-match)}
+          {:timezone-string id
+           :timezone nil})))))
+
+
 (defn- find-available-mentors-in-board
   [{:keys [organization project-number]}]
   (let [project-id (project-node-id
@@ -137,15 +177,17 @@
                             (let [[_ name handle]
                                   (re-find #"(.*)\((@\w+)\)" title)]
                               (if handle
-                                (merge
-                                 (select-fields item
-                                                ["CET" "Org" "Team"
-                                                 "staff"
-                                                 "Role"
-                                                 "Headline"]
-                                                fields)
-                                 {:name (string/trim name)
-                                  :handle (string/trim handle)}))))
+                                (let [parsed (merge
+                                              (select-fields item
+                                                             ["CET" "Org" "Team"
+                                                              "staff"
+                                                              "Role"
+                                                              "Headline"]
+                                                             fields)
+                                              {:name (string/trim name)
+                                               :handle (string/trim handle)})]
+                                  (merge parsed
+                                         (match-timezone (get parsed "CET")))))))
         ]
     (->> (project-items cfg/github-graphql-url project-id)
          (filter #(and
