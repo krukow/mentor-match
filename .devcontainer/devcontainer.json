@@ -3,10 +3,5 @@
     "image": "clojure:openjdk-19-tools-deps-bullseye",
     "settings": {
         "terminal.integrated.shell.linux": "/bin/bash"
-    },
-    "hostRequirements": {
-        "cpus": 8,
-        "memory": "32gb",
-        "storage": "64gb"
     }
 }
